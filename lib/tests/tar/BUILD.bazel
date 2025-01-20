@@ -483,5 +483,57 @@ mtree_spec(
 assert_tar_listing(
     name = "test_16_before_processing",
     actual = ":mtree16",
-    expected = [],
+    expected = [
+        "drwxr-xr-x  0 0      0           0 Jan  1  2023 lib/",
+        "drwxr-xr-x  0 0      0           0 Jan  1  2023 lib/tests",
+        "drwxr-xr-x  0 0      0           0 Jan  1  2023 lib/tests/tar",
+        "drwxr-xr-x  0 0      0           0 Jan  1  2023 lib/tests/tar/node_modules",
+        "drwxr-xr-x  0 0      0           0 Jan  1  2023 lib/tests/tar/node_modules/.pnpm",
+        "drwxr-xr-x  0 0      0           0 Jan  1  2023 lib/tests/tar/node_modules/.pnpm/a@0.0.0",
+        "drwxr-xr-x  0 0      0           0 Jan  1  2023 lib/tests/tar/node_modules/.pnpm/a@0.0.0/node_modules",
+        "drwxr-xr-x  0 0      0           0 Jan  1  2023 lib/tests/tar/node_modules/.pnpm/a@0.0.0/node_modules/a",
+        "-rwxr-xr-x  0 0      0           0 Jan  1  2023 lib/tests/tar/node_modules/.pnpm/a@0.0.0/node_modules/a/package.json",
+        "drwxr-xr-x  0 0      0           0 Jan  1  2023 lib/tests/tar/node_modules/.pnpm/b@0.0.0",
+        "drwxr-xr-x  0 0      0           0 Jan  1  2023 lib/tests/tar/node_modules/.pnpm/b@0.0.0/node_modules",
+        "drwxr-xr-x  0 0      0           0 Jan  1  2023 lib/tests/tar/node_modules/.pnpm/b@0.0.0/node_modules/a",
+        "-rwxr-xr-x  0 0      0           0 Jan  1  2023 lib/tests/tar/node_modules/.pnpm/b@0.0.0/node_modules/a/package.json",
+        "drwxr-xr-x  0 0      0           0 Jan  1  2023 lib/tests/tar/node_modules/a",
+        "-rwxr-xr-x  0 0      0           0 Jan  1  2023 lib/tests/tar/node_modules/a/package.json",
+        "drwxr-xr-x  0 0      0           0 Jan  1  2023 lib/tests/tar/dir",
+        "-rwxr-xr-x  0 0      0           0 Jan  1  2023 lib/tests/tar/dir/a",
+        "-rwxr-xr-x  0 0      0           0 Jan  1  2023 lib/tests/tar/dir/b",
+    ],
+)
+
+mtree_mutate(
+    name = "resolve_symlinks",
+    srcs = [
+        ":e16_node_modules",
+    ],
+    mtree = ":mtree16",
+)
+
+assert_tar_listing(
+    name = "test_16_after_processing",
+    actual = ":resolve_symlinks",
+    expected = [
+        "drwxr-xr-x  0 0      0           0 Jan  1  2023 lib/",
+        "drwxr-xr-x  0 0      0           0 Jan  1  2023 lib/tests",
+        "drwxr-xr-x  0 0      0           0 Jan  1  2023 lib/tests/tar",
+        "drwxr-xr-x  0 0      0           0 Jan  1  2023 lib/tests/tar/node_modules",
+        "drwxr-xr-x  0 0      0           0 Jan  1  2023 lib/tests/tar/node_modules/.pnpm",
+        "drwxr-xr-x  0 0      0           0 Jan  1  2023 lib/tests/tar/node_modules/.pnpm/a@0.0.0",
+        "drwxr-xr-x  0 0      0           0 Jan  1  2023 lib/tests/tar/node_modules/.pnpm/a@0.0.0/node_modules",
+        "drwxr-xr-x  0 0      0           0 Jan  1  2023 lib/tests/tar/node_modules/.pnpm/a@0.0.0/node_modules/a",
+        "-rwxr-xr-x  0 0      0           0 Jan  1  2023 lib/tests/tar/node_modules/.pnpm/a@0.0.0/node_modules/a/package.json",
+        "drwxr-xr-x  0 0      0           0 Jan  1  2023 lib/tests/tar/node_modules/.pnpm/b@0.0.0",
+        "drwxr-xr-x  0 0      0           0 Jan  1  2023 lib/tests/tar/node_modules/.pnpm/b@0.0.0/node_modules",
+        "drwxr-xr-x  0 0      0           0 Jan  1  2023 lib/tests/tar/node_modules/.pnpm/b@0.0.0/node_modules/a",
+        "l---------  0 0      0           0 Dec 31  1969 lib/tests/tar/node_modules/.pnpm/b@0.0.0/node_modules/a/package.json -> lib/tests/tar/node_modules/.pnpm/a@0.0.0/node_modules/a/package.json",
+        "drwxr-xr-x  0 0      0           0 Jan  1  2023 lib/tests/tar/node_modules/a",
+        "l---------  0 0      0           0 Dec 31  1969 lib/tests/tar/node_modules/a/package.json -> lib/tests/tar/node_modules/.pnpm/a@0.0.0/node_modules/a/package.json",
+        "drwxr-xr-x  0 0      0           0 Jan  1  2023 lib/tests/tar/dir",
+        "-rwxr-xr-x  0 0      0           0 Jan  1  2023 lib/tests/tar/dir/a",
+        "l---------  0 0      0           0 Dec 31  1969 lib/tests/tar/dir/b -> lib/tests/tar/dir/a",
+    ],
 )

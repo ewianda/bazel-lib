@@ -133,6 +133,7 @@ def _add_compression_args(compress, args):
         args.add("--compress")
     if compress == "gzip":
         args.add("--gzip")
+        args.add("--options=gzip:!timestamp")  # See https://datatracker.ietf.org/doc/html/rfc1952#page-5 why this option
     if compress == "lrzip":
         args.add("--lrzip")
     if compress == "lzma":
@@ -170,12 +171,12 @@ def _is_unused_inputs_enabled(attr):
     """
     if attr.compute_unused_inputs == 1:
         return True
-    elif attr.compute_unused_inputs == 0:
+    if attr.compute_unused_inputs == 0:
         return False
-    elif attr.compute_unused_inputs == -1:
+    if attr.compute_unused_inputs == -1:
         return attr._compute_unused_inputs_flag[BuildSettingInfo].value
-    else:
-        fail("Unexpected `compute_unused_inputs` value: {}".format(attr.compute_unused_inputs))
+
+    fail("Unexpected `compute_unused_inputs` value: {}".format(attr.compute_unused_inputs))
 
 def _is_unprunable(file):
     # Some input files cannot be pruned because their name will be misinterpreted by Bazel when reading the unused_inputs_list.
@@ -278,6 +279,10 @@ def _configured_unused_inputs_file(ctx, srcs, keep):
 
     return unused_inputs
 
+# TODO(3.0): Access field directly after minimum bazel_compatibility advanced to or beyond v7.0.0.
+def _repo_mapping_manifest(files_to_run):
+    return getattr(files_to_run, "repo_mapping_manifest", None)
+
 def _tar_impl(ctx):
     bsdtar = ctx.toolchains[TAR_TOOLCHAIN_TYPE]
     inputs = ctx.files.srcs[:]
@@ -301,7 +306,7 @@ def _tar_impl(ctx):
     inputs.append(ctx.file.mtree)
 
     repo_mappings = [
-        src[DefaultInfo].files_to_run.repo_mapping_manifest
+        _repo_mapping_manifest(src[DefaultInfo].files_to_run)
         for src in ctx.attr.srcs
     ]
     repo_mappings = [m for m in repo_mappings if m != None]
@@ -340,8 +345,7 @@ def _tar_impl(ctx):
                 _unused_inputs_file = depset([unused_inputs_file]),
             ),
         ]
-    else:
-        return default_info
+    return default_info
 
 def _mtree_line(file, type, content = None, uid = "0", gid = "0", time = "1672560000", mode = "0755"):
     spec = [
@@ -363,8 +367,7 @@ def _mtree_line(file, type, content = None, uid = "0", gid = "0", time = "167256
 def _to_rlocation_path(file, workspace):
     if file.short_path.startswith("../"):
         return file.short_path[3:]
-    else:
-        return workspace + "/" + file.short_path
+    return workspace + "/" + file.short_path
 
 def _vis_encode(filename):
     # TODO(#794): correctly encode all filenames by using vis(3) (or porting it)
@@ -388,10 +391,61 @@ def _expand(file, expander, transform = to_repository_relative_path):
             if i == 1:
                 parent += "/"
 
-            lines.append(_mtree_line(parent, "dir"))
+            lines.append(_mtree_line(_vis_encode(parent), "dir"))
 
         lines.append(_mtree_line(_vis_encode(path), "file", content = _vis_encode(e.path)))
     return lines
+
+def _mtree_impls(ctx):
+    srcs_runfiles = [
+        src[DefaultInfo].default_runfiles.files
+        for src in ctx.attr.srcs
+    ]
+
+    #runfiles = ctx.runfiles(files = linter_inputs.to_list())
+    #runfiles = runfiles.merge_all([
+    #ctx.attr._pyright.default_runfiles,
+    #] + [r.default_runfiles for r in deps])
+    args = ctx.actions.args()
+
+    mtree_generator = ctx.executable.mtree_generator.path
+    symlinks = {}
+    for dep in srcs_runfiles:
+        for src in dep.to_list():
+            symlinks[src.path] = to_repository_relative_path(src)
+    for s in ctx.files.srcs:
+        symlinks[s.path] = to_repository_relative_path(s)
+
+    symlink_file = ctx.actions.declare_file(ctx.attr.name + ".spec.json")
+    ctx.actions.write(
+        output = symlink_file,
+        content = json.encode(
+            symlinks,
+        ),
+    )
+
+    out_mtree = ctx.outputs.out or ctx.actions.declare_file(ctx.attr.name + ".spec")
+    args.add("--input", symlink_file)
+    args.add("--output", out_mtree)
+
+    # The Awk script is an external tool we can pass as a label
+    inputs = ctx.files.srcs[:]
+    inputs.append(symlink_file)
+
+    ctx.actions.run(
+        executable = mtree_generator,
+        inputs = depset(
+            direct = inputs,
+            transitive = srcs_runfiles + [
+                ctx.attr.mtree_generator.default_runfiles.files,
+            ],
+        ),
+        outputs = [out_mtree],
+        arguments = [args],
+        mnemonic = "Mtree",
+    )
+
+    return [DefaultInfo(files = depset([out_mtree]))]
 
 def _mtree_impl(ctx):
     out = ctx.outputs.out or ctx.actions.declare_file(ctx.attr.name + ".spec")
@@ -411,7 +465,7 @@ def _mtree_impl(ctx):
             continue
 
         runfiles_dir = _calculate_runfiles_dir(default_info)
-        repo_mapping = default_info.files_to_run.repo_mapping_manifest
+        repo_mapping = _repo_mapping_manifest(default_info.files_to_run)
 
         # copy workspace name here just in case to prevent ctx
         # to be transferred to execution phase.
@@ -442,6 +496,72 @@ def _mtree_impl(ctx):
     ctx.actions.write(out, content = content)
 
     return DefaultInfo(files = depset([out]), runfiles = ctx.runfiles([out]))
+
+def _mtree_mutate_impl(ctx):
+    srcs_runfiles = [
+        src[DefaultInfo].default_runfiles.files
+        for src in ctx.attr.srcs
+    ]
+    args = ctx.actions.args()
+    bsdtar = ctx.toolchains[TAR_TOOLCHAIN_TYPE]
+    mtree_generator = ctx.executable.mtree_generator.path
+
+    out_mtree = ctx.outputs.out
+    args.add("--input", ctx.file.mtree)
+    args.add("--output", out_mtree)
+    args.add("--bin_dir", ctx.bin_dir.path)
+
+    if ctx.attr.owner:
+        args.add("--owner", ctx.attr.owner)
+    if ctx.attr.ownername:
+        args.add("--ownername", ctx.attr.ownername)
+    if ctx.attr.strip_prefix:
+        args.add("--strip_prefix", ctx.attr.strip_prefix)
+    if ctx.attr.package_dir:
+        args.add("--package_dir", ctx.attr.package_dir)
+    if ctx.attr.mtime:
+        args.add("--mtime", ctx.attr.mtime)
+
+    #executable = bsdtar.tarinfo.binary,
+    inputs = ctx.files.srcs[:]
+    inputs.append(ctx.file.mtree)
+    ctx.actions.run(
+        executable = mtree_generator,
+        arguments = [args],
+        inputs = depset(
+            direct = inputs,
+            transitive = srcs_runfiles + [
+                ctx.attr.mtree_generator.default_runfiles.files,
+            ],
+        ),
+        outputs = [out_mtree],
+    )
+
+    return [DefaultInfo(files = depset([out_mtree]))]
+
+mtree_mutate = rule(
+    implementation = _mtree_mutate_impl,
+    attrs = {
+        "mtree": attr.label(allow_single_file = True),
+        "awk_script": attr.label(allow_single_file = True, default = "@aspect_bazel_lib//lib/private:modify_mtree.awk"),
+        "srcs": attr.label_list(allow_files = True),
+        "strip_prefix": attr.string(),
+        "package_dir": attr.string(),
+        "mtime": attr.string(),
+        "owner": attr.string(),
+        "ownername": attr.string(),
+        "out": attr.output(),
+        "mtree_generator": attr.label(
+            default = Label("//tools/mtree:mtree"),
+            executable = True,
+            cfg = "exec",
+        ),
+    },
+    toolchains = [
+        TAR_TOOLCHAIN_TYPE,
+        "@aspect_bazel_lib//lib:coreutils_toolchain_type",
+    ],
+)
 
 tar_lib = struct(
     attrs = _tar_attrs,
